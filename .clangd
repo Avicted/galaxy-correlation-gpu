@@ -1,0 +1,8 @@
+CompileFlags:
+  Add:
+    - -D__HIP_PLATFORM_HCC__
+    - -D__HIP_PLATFORM_AMD__
+    - -include .clangd_compat.h
+    - -I/opt/rocm/include
+    - -std=c++17
+    - -xc++

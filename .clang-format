@@ -1,0 +1,13 @@
+# The project's existing style: LLVM defaults, which the HIP source already
+# matches exactly. Kept deliberately close to upstream LLVM so that the code
+# quoted in the accompanying blog posts stays identical to the code here.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+PointerAlignment: Right
+SortIncludes: false
+...

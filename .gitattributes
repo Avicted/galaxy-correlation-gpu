@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+# The two catalogs are third-party files, distributed exactly as received, and
+# their bytes are an input to results/omega.out - which `make verify` diffs byte
+# for byte. They use CRLF. Normalising them would silently invalidate the
+# reference output, so they are frozen. See data/README.md.
+data/*.txt        -text
+results/omega.out -text
+
+# GitHub's language detection calls .cu "Cuda" only with the hint.
+*.cu  linguist-language=Cuda
+*.cuh linguist-language=Cuda
+Makefile.pre-commit linguist-language=Makefile
+
+# The catalogs are data, not code - keep them out of diffs and language stats.
+data/*.txt        -diff linguist-generated
+results/omega.out -diff

@@ -1,0 +1,16 @@
+# Build outputs
+bin/
+
+# Runtime results. results/omega.out is the committed reference output that
+# `make verify` checks against, so it is deliberately tracked; everything else
+# in results/ is a per-run artifact.
+results/*
+!results/omega.out
+
+# Editor / tooling
+.vscode/launch.json
+compile_commands.json
+
+# Temporary logs
+err.txt
+*.log

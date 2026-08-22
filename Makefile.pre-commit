@@ -1,0 +1,186 @@
+# Quality gate. Everything pre-commit and CI invoke lives here.
+#
+# This file exists separately from ./Makefile for one structural reason: the
+# main Makefile presumes a GPU toolchain. Its BACKEND variable shells out to
+# `command -v nvcc` at parse time, on *every* invocation, and every build, run,
+# bench and verify rule needs nvcc or hipcc. None of that exists on a
+# contributor's laptop or on a GitHub-hosted runner - but the quality gate has
+# to run there.
+#
+# So: this file must parse and pass with no CUDA, no ROCm and no GPU present.
+#
+#     make -f Makefile.pre-commit lint      # the full no-GPU gate
+#     make -f Makefile.pre-commit format    # fix formatting in place
+#
+# The main Makefile delegates its quality targets here, so each check has
+# exactly one implementation and the hook, the CI step and the local command
+# are the same command.
+#
+# The two exceptions are marked below: `tidy` needs the CUDA headers (not a
+# GPU) and skips cleanly without them, and `verify` needs a real GPU and
+# delegates back up to ./Makefile. Neither gates an automatic hook stage.
+
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
+ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+SRC_DIR  := $(ROOT_DIR)/src
+
+BOLD   := \033[1m
+GREEN  := \033[32m
+YELLOW := \033[33m
+CYAN   := \033[36m
+RED    := \033[31m
+RESET  := \033[0m
+
+# Pinned so a check never changes its verdict between machines. Keep in sync
+# with the ARGs in Dockerfile.pre-commit.
+CLANG_FORMAT_VERSION := 22.1.8
+SHELLCHECK_VERSION   := 0.10.0
+HADOLINT_VERSION     := 2.12.0
+GITLEAKS_VERSION     := 8.24.0
+
+CLANG_FORMAT ?= clang-format
+CLANG_TIDY   ?= clang-tidy
+ROCM_PATH    ?= /opt/rocm
+OFFLOAD_ARCH ?= gfx1030
+
+# Overridable so a hook can pass a staged subset; the defaults cover the tree.
+SOURCES     ?= $(wildcard $(SRC_DIR)/*.cu $(SRC_DIR)/*.cuh $(SRC_DIR)/*.cpp $(SRC_DIR)/*.hpp $(SRC_DIR)/*.h)
+SHELL_FILES ?= $(wildcard $(ROOT_DIR)/scripts/*.sh)
+DOCKERFILES ?= $(ROOT_DIR)/Dockerfile $(ROOT_DIR)/Dockerfile.pre-commit
+CHECKSUMS   := $(ROOT_DIR)/checksums/SHA256SUMS
+
+# STRICT=1 turns a tool-version mismatch into an error. CI sets it; humans get
+# a warning so a missing pin does not block local work.
+STRICT ?= 0
+
+.NOTPARALLEL:
+
+.PHONY: help tools format format-check shellcheck hadolint gitleaks \
+        data-integrity docs-links lint tidy verify all
+.DEFAULT_GOAL := help
+
+##@ Help
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*##"; printf "\n$(BOLD)Quality gate$(RESET)  (no CUDA, no GPU required)\n\n"} \
+	      /^[a-zA-Z_.-]+:.*?##/ { printf "  $(CYAN)%-16s$(RESET) %s\n", $$1, $$2 } \
+	      /^##@/ { printf "\n$(BOLD)%s$(RESET)\n", substr($$0, 5) }' $(MAKEFILE_LIST)
+	@printf "\n"
+
+##@ Toolchain
+tools: ## Report each tool's version and flag drift from the pinned value
+	@status=0; \
+	check() { \
+	  local name="$$1" pinned="$$2" cmd="$$3"; \
+	  if ! command -v "$$name" >/dev/null 2>&1; then \
+	    printf "  $(YELLOW)%-14s missing$(RESET)\n" "$$name"; return 0; \
+	  fi; \
+	  local have; have=$$(eval "$$cmd" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1); \
+	  if [ "$$have" = "$$pinned" ]; then \
+	    printf "  $(GREEN)%-14s %s$(RESET)\n" "$$name" "$$have"; \
+	  else \
+	    printf "  $(YELLOW)%-14s %s (pinned %s)$(RESET)\n" "$$name" "$$have" "$$pinned"; \
+	    [ "$(STRICT)" = "1" ] && status=1 || true; \
+	  fi; \
+	}; \
+	check clang-format "$(CLANG_FORMAT_VERSION)" "$(CLANG_FORMAT) --version"; \
+	check shellcheck   "$(SHELLCHECK_VERSION)"   "shellcheck --version"; \
+	check hadolint     "$(HADOLINT_VERSION)"     "hadolint --version"; \
+	check gitleaks     "$(GITLEAKS_VERSION)"     "gitleaks version"; \
+	if [ "$$status" -ne 0 ]; then \
+	  printf "$(RED)error: pinned tool versions do not match (STRICT=1)$(RESET)\n" >&2; exit 1; \
+	fi
+
+##@ Checks
+format: ## Apply clang-format in place
+	@command -v $(CLANG_FORMAT) >/dev/null 2>&1 || { printf "$(RED)error: clang-format not found$(RESET)\n" >&2; exit 1; }
+	@$(CLANG_FORMAT) -i --style=file $(SOURCES)
+	@printf "$(GREEN)formatted %d file(s)$(RESET)\n" $(words $(SOURCES))
+
+format-check: ## Fail if any source is not formatted
+	@command -v $(CLANG_FORMAT) >/dev/null 2>&1 || { printf "$(RED)error: clang-format not found$(RESET)\n" >&2; exit 1; }
+	@if ! $(CLANG_FORMAT) --dry-run --Werror --style=file $(SOURCES) 2>&1; then \
+	  printf "$(RED)not formatted. fix with: make format$(RESET)\n" >&2; exit 1; \
+	fi
+	@printf "$(GREEN)formatting OK$(RESET)\n"
+
+# An empty file list used to make this check print "skip" and pass, which meant
+# it had never actually run. Missing scripts are now an error.
+shellcheck: ## Lint the shell scripts
+	@test -n "$(strip $(SHELL_FILES))" || { printf "$(RED)error: no shell scripts found under scripts/$(RESET)\n" >&2; exit 1; }
+	@if ! command -v shellcheck >/dev/null 2>&1; then \
+	  printf "$(YELLOW)shellcheck not installed - use 'make pre-commit' to run it in Docker$(RESET)\n"; \
+	else \
+	  shellcheck -x $(SHELL_FILES) && printf "$(GREEN)shellcheck OK$(RESET)\n"; \
+	fi
+
+hadolint: ## Lint the Dockerfiles
+	@if ! command -v hadolint >/dev/null 2>&1; then \
+	  printf "$(YELLOW)hadolint not installed - use 'make pre-commit' to run it in Docker$(RESET)\n"; \
+	else \
+	  hadolint $(DOCKERFILES) && printf "$(GREEN)hadolint OK$(RESET)\n"; \
+	fi
+
+gitleaks: ## Scan for committed secrets
+	@if ! command -v gitleaks >/dev/null 2>&1; then \
+	  printf "$(YELLOW)gitleaks not installed - use 'make pre-commit' to run it in Docker$(RESET)\n"; \
+	else \
+	  gitleaks dir "$(ROOT_DIR)" --redact --no-banner && printf "$(GREEN)gitleaks OK$(RESET)\n"; \
+	fi
+
+# results/omega.out is compared byte for byte by `make verify`, and the two
+# catalogs are its input. A whitespace or line-ending hook that "tidied" any of
+# the three would invalidate the reference silently. This makes it loud.
+data-integrity: ## Check the catalogs and reference output are unchanged
+	@cd $(ROOT_DIR) && sha256sum -c --quiet $(CHECKSUMS)
+	@printf "$(GREEN)data integrity OK$(RESET)\n"
+
+docs-links: ## Check every relative Markdown link resolves on disk
+	@cd $(ROOT_DIR) && status=0; \
+	while read -r file link; do \
+	  target="$${link%%#*}"; \
+	  [ -z "$$target" ] && continue; \
+	  base=$$(dirname "$$file"); \
+	  if [ ! -e "$$base/$$target" ] && [ ! -e "$$target" ]; then \
+	    printf "$(RED)  %s -> %s (missing)$(RESET)\n" "$$file" "$$link" >&2; status=1; \
+	  fi; \
+	done < <(grep -roE '\]\([^):]+\)' --include='*.md' . \
+	         | sed -E 's/:\]\(/ /; s/\)$$//' | grep -v '^\./\.git'); \
+	if [ "$$status" -ne 0 ]; then printf "$(RED)broken relative links$(RESET)\n" >&2; exit 1; fi; \
+	printf "$(GREEN)markdown links OK$(RESET)\n"
+
+lint: tools format-check shellcheck hadolint gitleaks data-integrity docs-links ## Run the full no-GPU gate
+	@printf "$(GREEN)$(BOLD)all checks passed$(RESET)\n"
+
+##@ Needs a toolchain
+# Needs the CUDA headers to parse a .cu, but still no GPU. Skips cleanly when
+# they are absent so `lint` stays runnable everywhere; CI runs it in the CUDA
+# image where the skip cannot silently hide a failure.
+tidy: ## clang-tidy (slow; needs CUDA/ROCm headers, skips without them)
+	@command -v $(CLANG_TIDY) >/dev/null 2>&1 || { printf "$(YELLOW)clang-tidy not installed - skipping$(RESET)\n"; exit 0; }
+	@for f in $(SOURCES); do \
+	  case "$$f" in \
+	    *.cpp) \
+	      if [ ! -d "$(ROCM_PATH)/include/hip" ]; then \
+	        printf "$(YELLOW)  skip %s (no HIP headers under $(ROCM_PATH))$(RESET)\n" "$$(basename $$f)"; \
+	        continue; \
+	      fi; \
+	      flags="-x hip --rocm-path=$(ROCM_PATH) --offload-arch=$(OFFLOAD_ARCH) -std=c++17";; \
+	    *) \
+	      if ! echo '#include <cuda_runtime.h>' | $(CLANG_TIDY) --quiet - -- -x cuda --cuda-host-only >/dev/null 2>&1; then \
+	        printf "$(YELLOW)  skip %s (no CUDA headers)$(RESET)\n" "$$(basename $$f)"; \
+	        continue; \
+	      fi; \
+	      flags="-x cuda --cuda-host-only -std=c++17";; \
+	  esac; \
+	  printf "  clang-tidy %s\n" "$$(basename $$f)"; \
+	  $(CLANG_TIDY) "$$f" -- $$flags -I$(SRC_DIR); \
+	done
+	@printf "$(GREEN)clang-tidy OK$(RESET)\n"
+
+# The only upward delegation. Needs a real GPU, so it is manual-stage only.
+verify: ## Re-run the solver and diff against results/omega.out (needs a GPU)
+	@$(MAKE) --no-print-directory -C $(ROOT_DIR) verify
+
+all: lint tidy ## lint + clang-tidy

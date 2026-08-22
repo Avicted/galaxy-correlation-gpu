@@ -1,0 +1,25 @@
+{
+  "name": "galaxy-correlation",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": "..",
+    "args": {
+      "UID": "1001",
+      "GID": "1001"
+    }
+  },
+  "workspaceFolder": "/work",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
+  "runArgs": ["--gpus", "all"],
+  "postCreateCommand": "pre-commit install --install-hooks",
+  "remoteUser": "dev",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "nvidia.nsight-vscode-edition"
+      ]
+    }
+  }
+}

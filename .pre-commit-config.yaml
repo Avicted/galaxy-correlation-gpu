@@ -1,0 +1,107 @@
+# Pre-commit quality + security gate for the galaxy correlation solver.
+#   https://pre-commit.com
+#
+#   pre-commit install                                  enable
+#   pre-commit run --all-files                          everything cheap
+#   pre-commit run --hook-stage pre-push --all-files    + clang-tidy
+#   pre-commit run --hook-stage manual --all-files      + make verify (needs a GPU)
+#   make pre-commit                                     all of it, in Docker
+#
+# Every local hook below calls `make -f Makefile.pre-commit <target>` and
+# nothing else. That file is the single definition of each check, needs no CUDA
+# and no GPU, and is what CI runs too - so a green commit here means a green
+# pipeline there. See CONTRIBUTING.md.
+#
+# EXCLUSION, load-bearing: the two catalogs are third-party CRLF files, and
+# results/omega.out is the byte-exact reference that `make verify` diffs
+# against. trailing-whitespace, end-of-file-fixer and mixed-line-ending would
+# each happily rewrite them and silently invalidate the reference.
+# .gitattributes freezes their bytes, this excludes them from the hygiene
+# hooks, and the data-integrity hook below is the backstop that makes any
+# drift loud instead of silent.
+exclude: '^(data/.*\.txt|results/)'
+
+repos:
+  # ---- Generic hygiene -------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+        # The excluded catalogs are the only files that legitimately exceed this.
+        args: [--maxkb=512]
+
+  # ---- Project checks, all routed through Makefile.pre-commit ---------------
+  - repo: local
+    hooks:
+      - id: clang-format
+        name: clang-format
+        entry: make -f Makefile.pre-commit format
+        language: system
+        pass_filenames: false
+        files: '^src/.*\.(cu|cuh|cpp|hpp|h)$'
+
+      - id: shellcheck
+        name: shellcheck
+        entry: make -f Makefile.pre-commit shellcheck
+        language: system
+        pass_filenames: false
+        files: '\.sh$'
+
+      - id: hadolint
+        name: hadolint
+        entry: make -f Makefile.pre-commit hadolint
+        language: system
+        pass_filenames: false
+        files: '(^|/)Dockerfile(\.[a-z-]+)?$'
+
+      - id: gitleaks
+        name: gitleaks (secret scan)
+        entry: make -f Makefile.pre-commit gitleaks
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: data-integrity
+        name: catalogs and reference output byte-unchanged
+        entry: make -f Makefile.pre-commit data-integrity
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: docs-links
+        name: relative Markdown links resolve
+        entry: make -f Makefile.pre-commit docs-links
+        language: system
+        pass_filenames: false
+        files: '\.md$'
+
+      # Slow, and needs the CUDA/ROCm headers (though not a GPU). Pre-push
+      # rather than manual, so that it actually runs somewhere by default.
+      - id: clang-tidy
+        name: clang-tidy
+        entry: make -f Makefile.pre-commit tidy
+        language: system
+        pass_filenames: false
+        files: '^src/.*\.(cu|cuh|cpp|hpp|h)$'
+        stages: [pre-push]
+
+      # Needs a real GPU, so it cannot gate any automatic stage. Run it before
+      # publishing numbers: it re-runs the solver and checks the output still
+      # matches results/omega.out byte for byte.
+      - id: verify
+        name: verify against committed reference (make verify)
+        entry: make -f Makefile.pre-commit verify
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [manual]

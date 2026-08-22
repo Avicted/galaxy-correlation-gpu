@@ -1,0 +1,95 @@
+# GitHub offers no GPU runners, so `make run`, `make bench` and `make verify`
+# cannot run here. What this pipeline does prove without a device:
+#
+#   - the CUDA kernel compiles for three architectures at two tile sizes;
+#   - ptxas reports zero register spills at each (make spill-check), which
+#     turns the published "34 registers, zero spilled" into an assertion;
+#   - the HIP source compiles for RDNA 2 and RDNA 3;
+#   - clang-tidy is clean;
+#   - formatting, shell, Dockerfile, secret, data-integrity and link checks
+#     pass in the same container contributors run locally.
+#
+# `make verify` - the actual numerical check - is the manual-stage pre-commit
+# hook, and is run on the RTX 5080 before any figure is published.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: quality gate (no GPU toolchain)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Runs the hooks in the same pinned image a contributor gets from
+      # `make pre-commit`, so a green commit locally means a green job here.
+      - name: pre-commit (all hooks, in the pinned image)
+        run: make pre-commit
+
+      # STRICT=1 turns any tool-version drift from a warning into a failure.
+      - name: tool version pins
+        run: |
+          docker run --rm -v "$PWD:/src" --entrypoint make \
+            galaxy-correlation-pre-commit:local \
+            -f Makefile.pre-commit lint STRICT=1
+
+  build-cuda:
+    name: nvcc ${{ matrix.arch }} TILE=${{ matrix.tile }}
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:13.3.1-devel-ubuntu24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Not just the Blackwell target the numbers were measured on - the
+        # point is that the kernel is not hard-wired to one SM.
+        arch: [sm_75, sm_89, sm_120]
+        tile: [256, 512]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install make
+        run: apt-get update && apt-get install -y --no-install-recommends make
+      - name: Build
+        run: make cuda ARCH=${{ matrix.arch }} TILE=${{ matrix.tile }}
+      - name: Assert zero register spills
+        run: make spill-check ARCH=${{ matrix.arch }} TILE=${{ matrix.tile }}
+
+  build-hip:
+    name: hipcc ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    # Pinned, and pinned to the *versioned* tag on purpose. `latest` on this
+    # repository is an alias for the `-full` ROCm stack (~8 GB compressed,
+    # >20 GB unpacked), which does not fit in the ~21 GB a hosted runner has
+    # free - the job died with "no space left on device" before reaching a
+    # compiler. The versioned tag is the dev image it claims to be: 5.1 GB on
+    # disk, and it already carries hipcc and make, so there is nothing to
+    # apt-get install first.
+    container: rocm/dev-ubuntu-24.04:7.2.4
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [gfx1030, gfx1100]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make hip OFFLOAD_ARCH=${{ matrix.arch }}
+
+  tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:13.3.1-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-tidy
+        run: apt-get update && apt-get install -y --no-install-recommends make clang-tidy
+      - name: clang-tidy
+        run: make -f Makefile.pre-commit tidy

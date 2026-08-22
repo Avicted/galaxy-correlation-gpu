@@ -1,0 +1,20 @@
+# Conservative, signal-over-noise checks for the two GPU translation units.
+# Device code is analysed host-side only (see `make tidy`), so a number of
+# CUDA/HIP constructs are invisible to the analyser; this is a lint pass, not a
+# correctness proof. The N^2 histogram assertions are what guard correctness.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  portability-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result
+# implicit-widening-of-multiplication-result is disabled deliberately. Every
+# instance in this project is a compile-time constant product of `constexpr int`
+# bin counts (360 * 4 = 1440) that cannot overflow. The related
+# bugprone-misplaced-widening-cast is deliberately left ON: it is what caught the
+# genuine 32-bit overflow in the thread-count print.
+WarningsAsErrors: ''
+# Only this project's own sources; CUDA and ROCm headers stay quiet.
+HeaderFilterRegex: '(^|/)src/[^/]+\.(h|hpp|cuh)$'
+FormatStyle: file
