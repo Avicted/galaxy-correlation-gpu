@@ -40,8 +40,8 @@ static constexpr int binsperdegree = 4;
 
 // RDNA 2 optimization: Padded bins to avoid LDS bank conflicts
 // 1440 bins padded to 1536 (power of 2 aligned for 32 banks)
-const int num_bins = binsperdegree * totaldegrees; // 1440
-const int num_bins_padded = 1536;                  // Padded for LDS bank conflict avoidance
+const int num_bins = binsperdegree * totaldegrees;
+const int num_bins_padded = 1536;
 
 // Configurable block sizes for RDNA 2 occupancy tuning
 // Test: 16x32 (512 threads, 8 wave64), 32x16, or 16x16 (256 threads, 4 wave64)
@@ -152,6 +152,32 @@ __global__ void fill_histograms(const float *__restrict__ d_real_rasc, const flo
 // Forward declarations
 static int get_device();
 static int parseargs_readinput(int argc, char *argv[]);
+
+// Sums hist[0..num_bins) and checks it against target, printing the same
+// "<label> histogram sum = ..." / "Incorrect histogram sum..." messages the
+// DR/DD/RR checks in main() used to repeat verbatim three times. show_pct and
+// space_after_dots preserve the exact wording differences that existed
+// between the DR/DD/RR checks (only DR reported percentage-of-target; RR's
+// message omits the space after "exiting..").
+static int verify_histogram_sum(const long *hist, int num_bins, long target, const char *label, long total_pairs,
+                                bool show_pct, bool space_after_dots) {
+    long sum = 0L;
+    for (int i = 0; i < num_bins; ++i)
+        sum += hist[i];
+    printf("   %s histogram sum = %ld\n", label, sum);
+    if (sum != target) {
+        if (show_pct)
+            printf("   Incorrect histogram sum, exiting.. histogram%ssum: %ld\t\n   "
+                   "percentage of target: %15f\n",
+                   label, sum, ((float)sum / (float)total_pairs));
+        else if (space_after_dots)
+            printf("   Incorrect histogram sum, exiting.. histogram%ssum: %ld\n", label, sum);
+        else
+            printf("   Incorrect histogram sum, exiting..histogram%ssum: %ld\n", label, sum);
+        return (EXIT_FAILURE);
+    }
+    return (EXIT_SUCCESS);
+}
 
 static inline bool is_ascii_whitespace(char c) {
     return (c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\v' || c == '\f');
@@ -312,7 +338,6 @@ static int read_catalog_mmap(const char *file_path, float *output_rasc, float *o
 
 int main(int argc, char **argv) {
     printf("        Native HIP Galaxy Correlation - Optimized for AMD RDNA 2\n");
-    long int histogramDRsum, histogramDDsum, histogramRRsum;
     double walltime;
     double inputReadTimeMs = 0.0;
     double kernelExecutionTimeMs = 0.0;
@@ -346,12 +371,6 @@ int main(int argc, char **argv) {
     printf("   Input data read, now calculating histograms\n");
 
     FILE *outfile;
-
-    if (argc != 4) {
-        printf("Usage: ./galaxy_hip data_100k_arcmin.txt flat_100k_arcmin.txt "
-               "omega.out\n");
-        return (EXIT_FAILURE);
-    }
 
     histogram_DR = (long int *)calloc(totaldegrees * binsperdegree + 1ULL, sizeof(long int));
     histogram_DD = (long int *)calloc(totaldegrees * binsperdegree + 1ULL, sizeof(long int));
@@ -460,36 +479,14 @@ int main(int argc, char **argv) {
     free(rand_decl);
 
     // Verify histogram sums
-    histogramDRsum = 0L;
-    for (int i = 0; i < binsperdegree * totaldegrees; ++i)
-        histogramDRsum += histogram_DR[i];
     printf("results:\n");
-    printf("   DR histogram sum = %ld\n", histogramDRsum);
-
-    if (histogramDRsum != 10000000000L) {
-        printf("   Incorrect histogram sum, exiting.. histogramDRsum: %ld\t\n   "
-               "percentage of target: %15f\n",
-               histogramDRsum, ((float)histogramDRsum / (float)(N * N)));
+    const int num_bins = binsperdegree * totaldegrees;
+    if (verify_histogram_sum(histogram_DR, num_bins, 10000000000L, "DR", (long)N * N, true, true) != EXIT_SUCCESS)
         return (EXIT_FAILURE);
-    }
-
-    histogramDDsum = 0L;
-    for (int i = 0; i < binsperdegree * totaldegrees; ++i)
-        histogramDDsum += histogram_DD[i];
-    printf("   DD histogram sum = %ld\n", histogramDDsum);
-    if (histogramDDsum != 10000000000L) {
-        printf("   Incorrect histogram sum, exiting.. histogramDDsum: %ld\n", histogramDDsum);
+    if (verify_histogram_sum(histogram_DD, num_bins, 10000000000L, "DD", 0, false, true) != EXIT_SUCCESS)
         return (EXIT_FAILURE);
-    }
-
-    histogramRRsum = 0L;
-    for (int i = 0; i < binsperdegree * totaldegrees; ++i)
-        histogramRRsum += histogram_RR[i];
-    printf("   RR histogram sum = %ld\n", histogramRRsum);
-    if (histogramRRsum != 10000000000L) {
-        printf("   Incorrect histogram sum, exiting..histogramRRsum: %ld\n", histogramRRsum);
+    if (verify_histogram_sum(histogram_RR, num_bins, 10000000000L, "RR", 0, false, false) != EXIT_SUCCESS)
         return (EXIT_FAILURE);
-    }
 
     gettimeofday(&outputStart, NULL);
 
