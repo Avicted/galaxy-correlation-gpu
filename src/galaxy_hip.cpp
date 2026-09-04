@@ -56,19 +56,11 @@ const int num_bins_padded = 1536;
     {                                                                                                                  \
         gpuAssert((ans), __FILE__, __LINE__);                                                                          \
     }
-static inline void gpuAssert(hipError_t code, const char *file, int line, bool abort = true) {
+static inline void gpuAssert(hipError_t code, const char *file, int line) {
     if (code != hipSuccess) {
         fprintf(stderr, "   GPUassert: %s %s %d\n", hipGetErrorString(code), file, line);
-        if (abort)
-            exit(code);
+        exit(code);
     }
-}
-
-// Shared-memory (LDS) histogram increment. RDNA 2 resolves same-address
-// atomics within a wave in hardware, so no explicit ballot aggregation is done
-// here; -mwavefrontsize64 is a codegen flag, not an aggregation strategy.
-__device__ __forceinline__ void hist_add(unsigned int *histogram, int bin_index, unsigned int increment = 1U) {
-    atomicAdd(&histogram[bin_index], increment);
 }
 
 __device__ __forceinline__ int compute_histogram_index(float expr) {
@@ -121,20 +113,20 @@ __global__ void fill_histograms(const float *__restrict__ d_real_rasc, const flo
         const float sin_rand_j = sin(rand_decl_j);
         const float cos_rand_j = cos(rand_decl_j);
 
+        // The LDS atomics below need no explicit ballot aggregation: RDNA 2
+        // resolves same-address atomics within a wave in hardware.
+        // -mwavefrontsize64 is a codegen flag, not an aggregation strategy.
         const float dr_expr = sin_real_i * sin_rand_j + cos_real_i * cos_rand_j * cos(real_rasc_i - rand_rasc_j);
-        const int dr_histogram_index = compute_histogram_index(dr_expr);
-        hist_add(s_hist_DR, dr_histogram_index);
+        atomicAdd(&s_hist_DR[compute_histogram_index(dr_expr)], 1U);
 
         if (j >= i) {
             const unsigned int symmetric_increment = 1U + static_cast<unsigned int>(j != i);
 
             const float dd_expr = sin_real_i * sin_real_j + cos_real_i * cos_real_j * cos(real_rasc_i - real_rasc_j);
-            const int dd_histogram_index = compute_histogram_index(dd_expr);
-            hist_add(s_hist_DD, dd_histogram_index, symmetric_increment);
+            atomicAdd(&s_hist_DD[compute_histogram_index(dd_expr)], symmetric_increment);
 
             const float rr_expr = sin_rand_i * sin_rand_j + cos_rand_i * cos_rand_j * cos(rand_rasc_i - rand_rasc_j);
-            const int rr_histogram_index = compute_histogram_index(rr_expr);
-            hist_add(s_hist_RR, rr_histogram_index, symmetric_increment);
+            atomicAdd(&s_hist_RR[compute_histogram_index(rr_expr)], symmetric_increment);
         }
     }
     __syncthreads();
@@ -153,38 +145,24 @@ __global__ void fill_histograms(const float *__restrict__ d_real_rasc, const flo
 static int get_device();
 static int parseargs_readinput(int argc, char *argv[]);
 
-// Sums hist[0..num_bins) and checks it against target, printing the same
-// "<label> histogram sum = ..." / "Incorrect histogram sum..." messages the
-// DR/DD/RR checks in main() used to repeat verbatim three times. show_pct and
-// space_after_dots preserve the exact wording differences that existed
-// between the DR/DD/RR checks (only DR reported percentage-of-target; RR's
-// message omits the space after "exiting..").
-static int verify_histogram_sum(const long *hist, int num_bins, long target, const char *label, long total_pairs,
-                                bool show_pct, bool space_after_dots) {
+// Sums hist[0..num_bins) and checks it against target. Every histogram must sum
+// to N*N; a variant that fails this is a failed variant, not a fast one.
+static int verify_histogram_sum(const long *hist, int num_bins, long target, const char *label) {
     long sum = 0L;
     for (int i = 0; i < num_bins; ++i)
         sum += hist[i];
     printf("   %s histogram sum = %ld\n", label, sum);
     if (sum != target) {
-        if (show_pct)
-            printf("   Incorrect histogram sum, exiting.. histogram%ssum: %ld\t\n   "
-                   "percentage of target: %15f\n",
-                   label, sum, ((float)sum / (float)total_pairs));
-        else if (space_after_dots)
-            printf("   Incorrect histogram sum, exiting.. histogram%ssum: %ld\n", label, sum);
-        else
-            printf("   Incorrect histogram sum, exiting..histogram%ssum: %ld\n", label, sum);
+        printf("   Incorrect %s histogram sum, exiting.. expected %ld, got %ld (%.6f of target)\n", label, target, sum,
+               (double)sum / (double)target);
         return (EXIT_FAILURE);
     }
     return (EXIT_SUCCESS);
 }
 
-static inline bool is_ascii_whitespace(char c) {
-    return (c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\v' || c == '\f');
-}
-
 static inline void skip_ascii_whitespace(const char *&cursor, const char *end) {
-    while (cursor < end && is_ascii_whitespace(*cursor))
+    while (cursor < end && (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t' ||
+                            *cursor == '\v' || *cursor == '\f'))
         ++cursor;
 }
 
@@ -212,6 +190,10 @@ static bool parse_int_fast(const char *&cursor, const char *end, int *value) {
     return true;
 }
 
+// Accepts [+-]?digits[.digits] - the fixed-point form the catalogs use (see
+// data/README.md). Exponent notation is not accepted: neither catalog contains
+// any, and an unparsed 'e' makes the *next* field fail, so read_catalog_mmap
+// reports the line and exits rather than silently truncating a value.
 static bool parse_float_fast(const char *&cursor, const char *end, float *value) {
     skip_ascii_whitespace(cursor, end);
     if (cursor >= end)
@@ -245,34 +227,6 @@ static bool parse_float_fast(const char *&cursor, const char *end, float *value)
 
     if (!has_digits)
         return false;
-
-    if (cursor < end && (*cursor == 'e' || *cursor == 'E')) {
-        ++cursor;
-
-        int exp_sign = 1;
-        if (cursor < end && (*cursor == '+' || *cursor == '-')) {
-            exp_sign = (*cursor == '-') ? -1 : 1;
-            ++cursor;
-        }
-
-        if (cursor >= end || *cursor < '0' || *cursor > '9')
-            return false;
-
-        int exponent = 0;
-        while (cursor < end && *cursor >= '0' && *cursor <= '9') {
-            exponent = exponent * 10 + (*cursor - '0');
-            ++cursor;
-        }
-
-        exponent *= exp_sign;
-        if (exponent > 0) {
-            while (exponent--)
-                result *= 10.0;
-        } else if (exponent < 0) {
-            while (exponent++)
-                result *= 0.1;
-        }
-    }
 
     *value = (float)(sign * result);
     return true;
@@ -384,10 +338,6 @@ int main(int argc, char **argv) {
     double gpuPhaseTimeMs;
     gettimeofday(&t1, NULL);
 
-    int deviceCount = 0;
-    HIP_ERR_CHECK(hipGetDeviceCount(&deviceCount));
-    printf("   \nRunning on %d GPU(s)\n", deviceCount);
-
     // RDNA 2 optimized block configuration
     dim3 threadsInBlock(BLOCK_SIZE_X, BLOCK_SIZE_Y);
     dim3 threadBlocks((N + threadsInBlock.x - 1) / threadsInBlock.x, (N + threadsInBlock.y - 1) / threadsInBlock.y);
@@ -399,8 +349,6 @@ int main(int argc, char **argv) {
     const long int number_of_threads = (long int)threadsInBlock.x * threadsInBlock.y * threadsInBlock.z *
                                        threadBlocks.x * threadBlocks.y * threadBlocks.z;
     const long int threads_per_block = (long int)threadsInBlock.x * threadsInBlock.y * threadsInBlock.z;
-
-    HIP_ERR_CHECK(hipSetDevice(0));
 
     printf("====================================================================\n");
 
@@ -480,12 +428,11 @@ int main(int argc, char **argv) {
 
     // Verify histogram sums
     printf("results:\n");
-    const int num_bins = binsperdegree * totaldegrees;
-    if (verify_histogram_sum(histogram_DR, num_bins, 10000000000L, "DR", (long)N * N, true, true) != EXIT_SUCCESS)
+    if (verify_histogram_sum(histogram_DR, num_bins, N * N, "DR") != EXIT_SUCCESS)
         return (EXIT_FAILURE);
-    if (verify_histogram_sum(histogram_DD, num_bins, 10000000000L, "DD", 0, false, true) != EXIT_SUCCESS)
+    if (verify_histogram_sum(histogram_DD, num_bins, N * N, "DD") != EXIT_SUCCESS)
         return (EXIT_FAILURE);
-    if (verify_histogram_sum(histogram_RR, num_bins, 10000000000L, "RR", 0, false, false) != EXIT_SUCCESS)
+    if (verify_histogram_sum(histogram_RR, num_bins, N * N, "RR") != EXIT_SUCCESS)
         return (EXIT_FAILURE);
 
     gettimeofday(&outputStart, NULL);

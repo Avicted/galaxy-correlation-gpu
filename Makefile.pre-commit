@@ -1,24 +1,11 @@
-# Quality gate. Everything pre-commit and CI invoke lives here.
-#
-# This file exists separately from ./Makefile for one structural reason: the
-# main Makefile presumes a GPU toolchain. Its BACKEND variable shells out to
-# `command -v nvcc` at parse time, on *every* invocation, and every build, run,
-# bench and verify rule needs nvcc or hipcc. None of that exists on a
-# contributor's laptop or on a GitHub-hosted runner - but the quality gate has
-# to run there.
-#
-# So: this file must parse and pass with no CUDA, no ROCm and no GPU present.
+# Quality gate. Every check pre-commit and CI invoke lives here.
 #
 #     make -f Makefile.pre-commit lint      # the full no-GPU gate
 #     make -f Makefile.pre-commit format    # fix formatting in place
 #
-# The main Makefile delegates its quality targets here, so each check has
-# exactly one implementation and the hook, the CI step and the local command
-# are the same command.
-#
-# The two exceptions are marked below: `tidy` needs the CUDA headers (not a
-# GPU) and skips cleanly without them, and `verify` needs a real GPU and
-# delegates back up to ./Makefile. Neither gates an automatic hook stage.
+# This file must parse and pass with no CUDA, no ROCm and no GPU present. Two
+# targets are marked below as exceptions. CONTRIBUTING.md explains why the split
+# from ./Makefile exists and what it guarantees.
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c

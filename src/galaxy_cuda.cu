@@ -7,7 +7,8 @@
 //   - fast polynomial acos approximation (measured |err| <= 6.77e-5 rad;
 //     this does shift a small number of counts between bins, see fast_acosf)
 //   - DD/RR symmetry with whole-block diagonal skipping
-//   - inner-loop unrolling; shared-memory atomic histograms (fast on Blackwell)
+//   - inner-loop unrolling; shared-memory atomic histograms (fast on Blackwell),
+//     unpadded, unlike the HIP build - the padding measures as a no-op here
 // Measured on an RTX 5080 (driver 610.57.04, CUDA 13.3, sm_120, performance
 // governor), median of runs 2-9: 22.7 ms kernel, 0.032 s wall clock. The same
 // code with the block tiling, the fast acos, the symmetry and the unrolling
@@ -47,14 +48,13 @@ static long int GPUMemory = 0L;
 static constexpr int totaldegrees = 360;
 static constexpr int binsperdegree = 4;
 
-// 1440 bins padded to 1536, carried over from the RDNA 2 tuning pass where the
-// intent was to avoid LDS bank conflicts. Note 1536 is 3 * 512, not a power of
-// two. On this GPU the padding measures as a no-op: an interleaved A/B of 1536
-// against 1440 agrees to within 0.06 ms (0.3%) on every statistic, because the
-// atomics scatter across bins by data rather than by thread index. It is kept
-// only so the output stays comparable with the HIP build; 1440 is equally fine.
+// The HIP build pads these 1440 bins to 1536 to avoid LDS bank conflicts. That
+// padding is not carried over here: on Blackwell an interleaved A/B of 1536
+// against 1440 agreed to within 0.06 ms (0.3%) on every statistic, because the
+// atomics scatter across bins by data rather than by thread index. Unpadded is
+// 1152 bytes/block cheaper in shared memory and cannot affect the output, since
+// the flush loop below only ever reads bins [0, num_bins).
 const int num_bins = binsperdegree * totaldegrees; // 1440
-const int num_bins_padded = 1536;
 
 // Tile size = threads per block. Each block computes a TILE x TILE sub-block of
 // the pair matrix: TILE threads each own one i and loop a shared-memory j-tile.
@@ -66,16 +66,11 @@ const int num_bins_padded = 1536;
     {                                                                                                                  \
         gpuAssert((ans), __FILE__, __LINE__);                                                                          \
     }
-static inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true) {
+static inline void gpuAssert(cudaError_t code, const char *file, int line) {
     if (code != cudaSuccess) {
         fprintf(stderr, "   GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-        if (abort)
-            exit(code);
+        exit(code);
     }
-}
-
-__device__ __forceinline__ void hist_add(unsigned int *histogram, int bin_index, unsigned int increment = 1U) {
-    atomicAdd(&histogram[bin_index], increment);
 }
 
 __device__ __forceinline__ float fast_acosf(float x) {
@@ -128,10 +123,10 @@ __global__ void __launch_bounds__(TILE)
 
     extern __shared__ unsigned int s_mem[];
     unsigned int *s_hist_DR = s_mem;
-    unsigned int *s_hist_DD = s_hist_DR + num_bins_padded;
-    unsigned int *s_hist_RR = s_hist_DD + num_bins_padded;
+    unsigned int *s_hist_DD = s_hist_DR + num_bins;
+    unsigned int *s_hist_RR = s_hist_DD + num_bins;
     // Coordinate tiles for the j-block (real and rand catalogs).
-    float *s_coord = (float *)(s_hist_RR + num_bins_padded);
+    float *s_coord = (float *)(s_hist_RR + num_bins);
     float *sj_real_sin = s_coord;
     float *sj_real_cos = sj_real_sin + TILE;
     float *sj_real_ra = sj_real_cos + TILE;
@@ -139,7 +134,7 @@ __global__ void __launch_bounds__(TILE)
     float *sj_rand_cos = sj_rand_sin + TILE;
     float *sj_rand_ra = sj_rand_cos + TILE;
 
-    for (int b = tid; b < num_bins_padded; b += TILE) {
+    for (int b = tid; b < num_bins; b += TILE) {
         s_hist_DR[b] = 0;
         s_hist_DD[b] = 0;
         s_hist_RR[b] = 0;
@@ -179,7 +174,7 @@ __global__ void __launch_bounds__(TILE)
 
             // DR: real_i vs rand_j (not symmetric, always counted).
             const float dr_expr = ri_sin * sj_rand_sin[jj] + ri_cos * sj_rand_cos[jj] * cosf(ri_ra - sj_rand_ra[jj]);
-            hist_add(s_hist_DR, compute_histogram_index(dr_expr));
+            atomicAdd(&s_hist_DR[compute_histogram_index(dr_expr)], 1U);
 
             // DD/RR: symmetric, only j >= i.
             if (do_sym && j >= i) {
@@ -187,11 +182,11 @@ __global__ void __launch_bounds__(TILE)
 
                 const float dd_expr =
                     ri_sin * sj_real_sin[jj] + ri_cos * sj_real_cos[jj] * cosf(ri_ra - sj_real_ra[jj]);
-                hist_add(s_hist_DD, compute_histogram_index(dd_expr), inc);
+                atomicAdd(&s_hist_DD[compute_histogram_index(dd_expr)], inc);
 
                 const float rr_expr =
                     di_sin * sj_rand_sin[jj] + di_cos * sj_rand_cos[jj] * cosf(di_ra - sj_rand_ra[jj]);
-                hist_add(s_hist_RR, compute_histogram_index(rr_expr), inc);
+                atomicAdd(&s_hist_RR[compute_histogram_index(rr_expr)], inc);
             }
         }
     }
@@ -211,38 +206,24 @@ __global__ void __launch_bounds__(TILE)
 static int get_device();
 static int parseargs_readinput(int argc, char *argv[]);
 
-// Sums hist[0..num_bins) and checks it against target, printing the same
-// "<label> histogram sum = ..." / "Incorrect histogram sum..." messages the
-// DR/DD/RR checks in main() used to repeat verbatim three times. show_pct and
-// space_after_dots preserve the exact wording differences that existed
-// between the DR/DD/RR checks (only DR reported percentage-of-target; RR's
-// message omits the space after "exiting..").
-static int verify_histogram_sum(const long *hist, int num_bins, long target, const char *label, long total_pairs,
-                                bool show_pct, bool space_after_dots) {
+// Sums hist[0..num_bins) and checks it against target. Every histogram must sum
+// to N*N; a variant that fails this is a failed variant, not a fast one.
+static int verify_histogram_sum(const long *hist, int num_bins, long target, const char *label) {
     long sum = 0L;
     for (int i = 0; i < num_bins; ++i)
         sum += hist[i];
     printf("   %s histogram sum = %ld\n", label, sum);
     if (sum != target) {
-        if (show_pct)
-            printf("   Incorrect histogram sum, exiting.. histogram%ssum: %ld\t\n   "
-                   "percentage of target: %15f\n",
-                   label, sum, ((float)sum / (float)total_pairs));
-        else if (space_after_dots)
-            printf("   Incorrect histogram sum, exiting.. histogram%ssum: %ld\n", label, sum);
-        else
-            printf("   Incorrect histogram sum, exiting..histogram%ssum: %ld\n", label, sum);
+        printf("   Incorrect %s histogram sum, exiting.. expected %ld, got %ld (%.6f of target)\n", label, target, sum,
+               (double)sum / (double)target);
         return (EXIT_FAILURE);
     }
     return (EXIT_SUCCESS);
 }
 
-static inline bool is_ascii_whitespace(char c) {
-    return (c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\v' || c == '\f');
-}
-
 static inline void skip_ascii_whitespace(const char *&cursor, const char *end) {
-    while (cursor < end && is_ascii_whitespace(*cursor))
+    while (cursor < end && (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t' ||
+                            *cursor == '\v' || *cursor == '\f'))
         ++cursor;
 }
 
@@ -270,6 +251,10 @@ static bool parse_int_fast(const char *&cursor, const char *end, int *value) {
     return true;
 }
 
+// Accepts [+-]?digits[.digits] - the fixed-point form the catalogs use (see
+// data/README.md). Exponent notation is not accepted: neither catalog contains
+// any, and an unparsed 'e' makes the *next* field fail, so read_catalog_mmap
+// reports the line and exits rather than silently truncating a value.
 static bool parse_float_fast(const char *&cursor, const char *end, float *value) {
     skip_ascii_whitespace(cursor, end);
     if (cursor >= end)
@@ -303,34 +288,6 @@ static bool parse_float_fast(const char *&cursor, const char *end, float *value)
 
     if (!has_digits)
         return false;
-
-    if (cursor < end && (*cursor == 'e' || *cursor == 'E')) {
-        ++cursor;
-
-        int exp_sign = 1;
-        if (cursor < end && (*cursor == '+' || *cursor == '-')) {
-            exp_sign = (*cursor == '-') ? -1 : 1;
-            ++cursor;
-        }
-
-        if (cursor >= end || *cursor < '0' || *cursor > '9')
-            return false;
-
-        int exponent = 0;
-        while (cursor < end && *cursor >= '0' && *cursor <= '9') {
-            exponent = exponent * 10 + (*cursor - '0');
-            ++cursor;
-        }
-
-        exponent *= exp_sign;
-        if (exponent > 0) {
-            while (exponent--)
-                result *= 10.0;
-        } else if (exponent < 0) {
-            while (exponent++)
-                result *= 0.1;
-        }
-    }
 
     *value = (float)(sign * result);
     return true;
@@ -452,10 +409,6 @@ int main(int argc, char **argv) {
     double gpuPhaseTimeMs;
     gettimeofday(&t1, NULL);
 
-    int deviceCount = 0;
-    CUDA_ERR_CHECK(cudaGetDeviceCount(&deviceCount));
-    printf("   \nRunning on %d GPU(s)\n", deviceCount);
-
     const int tiles_per_dim = (N + TILE - 1) / TILE;
     dim3 threadsInBlock(TILE, 1, 1);
     dim3 threadBlocks(tiles_per_dim, tiles_per_dim, 1);
@@ -465,8 +418,6 @@ int main(int argc, char **argv) {
     const long int number_of_threads = (long int)threadsInBlock.x * threadsInBlock.y * threadsInBlock.z *
                                        threadBlocks.x * threadBlocks.y * threadBlocks.z;
     const long int threads_per_block = threadsInBlock.x;
-
-    CUDA_ERR_CHECK(cudaSetDevice(0));
 
     printf("====================================================================\n");
 
@@ -509,10 +460,9 @@ int main(int argc, char **argv) {
            threadBlocks.x, threadBlocks.y, threadBlocks.z, threadsInBlock.x * threadsInBlock.y * threadsInBlock.z);
     printf("    Total number of threads:\t%ld\n", number_of_threads);
 
-    // Launch kernel with padded shared histograms + j-tile coordinate buffers.
-    size_t sharedMemSize = 3 * num_bins_padded * sizeof(unsigned int) + 6 * TILE * sizeof(float);
-    printf("    Shared memory per block:\t%zu bytes (padded: %d bins, tile %d)\n", sharedMemSize, num_bins_padded,
-           TILE);
+    // Launch kernel with shared histograms + j-tile coordinate buffers.
+    size_t sharedMemSize = 3 * num_bins * sizeof(unsigned int) + 6 * TILE * sizeof(float);
+    printf("    Shared memory per block:\t%zu bytes (%d bins, tile %d)\n", sharedMemSize, num_bins, TILE);
 
     // CUDA-event kernel timing (finer than gettimeofday).
     cudaEvent_t kstart, kstop;
@@ -566,12 +516,11 @@ int main(int argc, char **argv) {
 
     // Verify histogram sums
     printf("results:\n");
-    const int num_bins = binsperdegree * totaldegrees;
-    if (verify_histogram_sum(histogram_DR, num_bins, 10000000000L, "DR", (long)N * N, true, true) != EXIT_SUCCESS)
+    if (verify_histogram_sum(histogram_DR, num_bins, N * N, "DR") != EXIT_SUCCESS)
         return (EXIT_FAILURE);
-    if (verify_histogram_sum(histogram_DD, num_bins, 10000000000L, "DD", 0, false, true) != EXIT_SUCCESS)
+    if (verify_histogram_sum(histogram_DD, num_bins, N * N, "DD") != EXIT_SUCCESS)
         return (EXIT_FAILURE);
-    if (verify_histogram_sum(histogram_RR, num_bins, 10000000000L, "RR", 0, false, false) != EXIT_SUCCESS)
+    if (verify_histogram_sum(histogram_RR, num_bins, N * N, "RR") != EXIT_SUCCESS)
         return (EXIT_FAILURE);
 
     struct timeval outputStart, outputEnd;

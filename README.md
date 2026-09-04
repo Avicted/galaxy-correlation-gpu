@@ -124,9 +124,10 @@ this is irrelevant. If you need exact bin agreement, use `acosf` instead.
 Two optimizations that were tried and *did not* pay off are documented in the blog post
 rather than silently dropped.
 
-Note that the histogram padding to 1536 bins is carried over from the RDNA 2 tuning and
-measures as a **no-op** on Blackwell: an interleaved A/B against 1440 agrees to within
-0.06 ms (0.3%). It is kept only so the output stays comparable with the HIP build.
+Note that the HIP build's histogram padding to 1536 bins is **not** carried over here: an
+interleaved A/B against 1440 agrees to within 0.06 ms (0.3%) on Blackwell, because the
+atomics scatter across bins by data rather than by thread index. The CUDA kernel runs
+unpadded, which is 1152 bytes per block cheaper in shared memory.
 
 ### HIP (RDNA 2)
 
@@ -143,38 +144,20 @@ measures as a **no-op** on Blackwell: an interleaved A/B against 1440 agrees to 
 
 ## Development
 
-There are two makefiles, and the split is the point.
-
-`Makefile` needs a GPU toolchain: it resolves `BACKEND` by looking for `nvcc` at parse
-time, and every build, run and benchmark rule needs `nvcc` or `hipcc`.
-`Makefile.pre-commit` needs none of that - it holds every check the hooks and CI invoke,
-and must pass on a bare `debian:bookworm-slim`. `Makefile` delegates its quality targets
-down to it, so each check has exactly one implementation and the hook, the CI step and the
-local command are the same command. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
 ```sh
 make install-hooks   # pre-commit install --install-hooks
 make lint            # the full no-GPU gate
 make pre-commit      # the same, inside the pinned CUDA-free image
 ```
 
-If you have none of the lint tools installed, `make pre-commit` is the path: it builds
-`Dockerfile.pre-commit` and runs every hook inside it at the pinned versions.
-`make -f Makefile.pre-commit tools` reports what you have and flags drift from the pins.
+There are two makefiles: `Makefile` needs a GPU toolchain, `Makefile.pre-commit` holds
+every check the hooks and CI run and needs none. [CONTRIBUTING.md](CONTRIBUTING.md)
+explains why that split is load-bearing, which hook runs at which stage, and how the
+byte-exact files in `data/` and `results/` are protected.
 
-Hook stages: the cheap checks gate every commit, `clang-tidy` runs on push (slow, and it
-needs the CUDA headers), and `make verify` is manual - it needs a real GPU.
-
-### What CI proves, and what it cannot
-
-GitHub has no GPU runners, so `run`, `bench` and `verify` cannot run there. CI compiles the
-CUDA kernel for `sm_75`/`sm_89`/`sm_120` at two tile sizes, asserts via `make spill-check`
-that `ptxas` still reports zero register spills at each, compiles the HIP source for
-`gfx1030`/`gfx1100`, runs `clang-tidy`, and runs the whole lint gate in the same container
-you get locally.
-
-It measures nothing. Every figure in this README comes from a real run on the RTX 5080,
-under the protocol above.
+CI measures nothing - GitHub has no GPU runners, so it only proves the code compiles for
+six target/tile combinations with zero register spills and that the tree is clean. Every
+figure in this README comes from a real run on the RTX 5080, under the protocol above.
 
 ## Layout
 
@@ -197,13 +180,6 @@ shared through a header - roughly 300 lines. That is deliberate: each file compi
 single command and can be read end to end, which is what the write-ups quote, and the two
 share no device code at all. The duplication is between backends, not within one; nobody
 reads both at once.
-
-### The byte-exact files
-
-`data/*.txt` and `results/omega.out` are frozen. The catalogs are third-party CRLF files
-and their exact bytes are an input to the reference output that `make verify` diffs byte
-for byte. `.gitattributes` stops git normalising them, `.pre-commit-config.yaml` excludes
-them from the whitespace hooks, and `checksums/SHA256SUMS` makes any drift loud.
 
 ## Data
 
