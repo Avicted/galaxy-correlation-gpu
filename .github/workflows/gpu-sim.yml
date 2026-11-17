@@ -1,0 +1,126 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this builds
+# the CUDA and HIP solvers with the Makefile and runs them on the full
+# 100000-object catalogues on a simulated NVIDIA H100 and AMD MI300X
+# (https://github.com/pantheongpu/pantheonsim). A simulator cannot reproduce
+# hardware-specific behavior or timing, so it complements the real-GPU
+# `make verify` and does not replace it.
+#
+# CUDA: the output must match results/omega.out byte for byte, as `make verify`
+# requires.
+# HIP: the HIP kernel uses acosf, while results/omega.out comes from the CUDA
+# kernel's fast_acosf approximation (see the comment in src/galaxy_cuda.cu), so
+# a byte-for-byte match is not expected. The job checks the built-in N*N
+# histogram sums and that no histogram differs from results/omega.out by more
+# than 0.1% of N*N in total.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/**"
+      - "Makefile"
+      - "data/**"
+      - "results/**"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cuda:
+    name: CUDA solver (simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@deff5781e8adfd83dec98dd5242dcbc96a564773 # v0.1.10
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+
+      # PTX only (compute_90) and a shared cudart, which the simulator needs.
+      # The other flags are the Makefile defaults.
+      - name: Build
+        run: make cuda ARCH=compute_90 NVCC_FLAGS="-O3 --use_fast_math -arch=compute_90 -cudart shared -DTILE=512"
+
+      # The full run takes about 18 minutes on the simulator. The solver exits
+      # non-zero if a histogram does not sum to N*N. A wrong-architecture run
+      # can still exit 0, so the output is searched for device problems too.
+      - name: Run and compare with results/omega.out
+        run: |
+          set -o pipefail
+          vgpu run bin/galaxy_cuda.out data/data_100k_arcmin.txt data/flat_100k_arcmin.txt results/omega.verify.out | tee run.log
+          if grep -qiE "VirtualGPU error|no device|no CUDA-capable|Found 0 |GPUassert|Incorrect .* histogram sum" run.log; then
+            echo "::error::the run reported a device or histogram problem"; exit 1
+          fi
+          grep -Eq "Found [1-9][0-9]* CUDA devices" run.log
+          for h in DR DD RR; do
+            grep -q "$h histogram sum = 10000000000$" run.log
+          done
+          diff -u results/omega.out results/omega.verify.out | head -20
+          cmp results/omega.out results/omega.verify.out
+          echo "output matches results/omega.out byte for byte"
+
+  hip:
+    name: HIP solver (simulated MI300X)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and ROCm
+        uses: pantheongpu/setup-pantheonsim@deff5781e8adfd83dec98dd5242dcbc96a564773 # v0.1.10
+        with:
+          gpu: amd/mi300x
+          cuda-toolkit: none
+          rocm: "7.2"
+
+      - name: Install comgr and hsa-rocr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y comgr hsa-rocr
+
+      - name: Build
+        run: make hip OFFLOAD_ARCH=gfx942
+
+      # The full run takes about 14 minutes on the simulator.
+      - name: Run and compare with results/omega.out
+        run: |
+          set -o pipefail
+          vgpu run bin/galaxy_hip.out data/data_100k_arcmin.txt data/flat_100k_arcmin.txt results/omega.verify.out | tee run.log
+          if grep -qiE "VirtualGPU error|no device|Found 0 |GPUassert|Incorrect .* histogram sum" run.log; then
+            echo "::error::the run reported a device or histogram problem"; exit 1
+          fi
+          grep -Eq "Found [1-9][0-9]* (CUDA|HIP)? ?devices" run.log || grep -Eq "Device .* \| device 0" run.log
+          for h in DR DD RR; do
+            grep -q "$h histogram sum = 10000000000$" run.log
+          done
+          # Total absolute per-bin difference from the reference, per histogram.
+          awk -v lim=0.001 -v nn=1e10 '
+            FNR == 1 { next }
+            FILENAME == ARGV[1] { for (k = 1; k <= 3; k++) ref[$1, k] = $(k + 2); bins[$1] = 1; next }
+            { for (k = 1; k <= 3; k++) out[$1, k] = $(k + 2); bins[$1] = 1 }
+            END {
+              split("DD DR RR", nm, " "); bad = 0
+              for (k = 1; k <= 3; k++) {
+                d = 0
+                for (b in bins) { x = out[b, k] - ref[b, k]; d += (x < 0 ? -x : x) }
+                printf "%s: sum|diff| = %d = %.4f%% of N*N (limit %.2f%%)\n", nm[k], d, 100 * d / nn, 100 * lim
+                if (d > lim * nn) bad = 1
+              }
+              exit bad
+            }' results/omega.out results/omega.verify.out
