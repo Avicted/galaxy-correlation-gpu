@@ -8,10 +8,10 @@
 #
 # Build:  make docker
 # Lint:   docker run --rm -v "$PWD:/work" galaxy-correlation:dev make lint
-# Run:    docker run --rm --gpus all -v "$PWD:/work" galaxy-correlation:dev make verify
+# Run:    docker run --rm --device nvidia.com/gpu=all -v "$PWD:/work" galaxy-correlation:dev make verify
 #
 # Building and linting work without a GPU. Only the run/bench/verify targets
-# need --gpus all and a matching host driver.
+# need --device nvidia.com/gpu=all and a matching host driver.
 #
 # The CUDA version here matches the toolchain the published figures were
 # measured with; see the header of src/galaxy_cuda.cu.
