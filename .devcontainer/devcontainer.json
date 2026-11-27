@@ -2,11 +2,7 @@
   "name": "galaxy-correlation",
   "build": {
     "dockerfile": "../Dockerfile",
-    "context": "..",
-    "args": {
-      "UID": "1001",
-      "GID": "1001"
-    }
+    "context": ".."
   },
   "workspaceFolder": "/work",
   "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
