@@ -2,7 +2,7 @@
 // Same two-point angular correlation as galaxy_hip.cpp, restructured for
 // NVIDIA:
 //   - block-tiled pair loop (each thread owns one i, loops a shared-memory
-//     j-tile) instead of one-thread-per-pair -> massive reuse / fewer loads
+//     j-tile) instead of one-thread-per-pair -> each j-tile load is reused by the whole block
 //   - precomputed per-galaxy sin/cos(decl) (no per-pair sincos)
 //   - fast polynomial acos approximation (measured |err| <= 6.77e-5 rad;
 //     this does shift a small number of counts between bins, see fast_acosf)
@@ -83,10 +83,9 @@ fast_acosf(float x)
 	// against acosf is 6.77e-5 rad (0.0039 degrees) over a 2e8-point sweep of
 	// [-1, 1], which is far below the 0.25-degree bin width.
 	//
-	// That bound does NOT make the binning identical, and an earlier version of
-	// this comment wrongly claimed it did. A sample only has to sit within
-	// 0.0039 degrees of a bin edge to move, and 0.65% of the sweep does exactly
-	// that. Over the real catalogs it shifts counts in 353 of the 360 populated
+	// That bound does not make the binning identical: a sample only has to sit
+	// within 0.0039 degrees of a bin edge to move, and 0.65% of the sweep does
+	// exactly that. Over the real catalogs it shifts counts in 353 of the 360 populated
 	// bins, at most 0.03% of any one bin, with a largest omega change of
 	// 0.002257 in the bin at 89.75 degrees. The histogram totals are unaffected,
 	// so the N*N asserts below cannot see this: a total is invariant to
@@ -229,7 +228,7 @@ static int
 parseargs_readinput(int argc, char *argv[]);
 
 // Sums hist[0..num_bins) and checks it against target. Every histogram must sum
-// to N*N; a variant that fails this is a failed variant, not a fast one.
+// to N*N, so a miscounting kernel fails loudly instead of reporting a time.
 static int
 verify_histogram_sum(const long *hist, int num_bins, long target, const char *label)
 {
