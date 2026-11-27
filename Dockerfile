@@ -84,11 +84,15 @@ RUN <<EOF
 EOF
 
 # Run as a non-root user so files created in the bind mount stay owned by the
-# caller on a typical single-user host.
-ARG UID=1001
-ARG GID=1001
+# caller on a typical single-user host. The base image ships an `ubuntu` user at
+# UID/GID 1000, the usual first-user ID on a host. Remove it so that `dev` can
+# take that ID, and so that VS Code can remap `dev` to any other host UID.
+ARG UID=1000
+ARG GID=1000
 RUN <<EOF
 set -euo pipefail
+userdel --remove ubuntu 2>/dev/null || true
+groupdel ubuntu 2>/dev/null || true
 groupadd --gid "$GID" dev
 useradd --uid "$UID" --gid "$GID" --create-home --shell /bin/bash dev
 EOF

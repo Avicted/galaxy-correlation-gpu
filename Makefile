@@ -244,7 +244,7 @@ pre-commit-staged: ## Run one hook stage (STAGE=pre-commit|pre-push) in that ima
 	$(PC_RUN) run --hook-stage $(or $(STAGE),pre-commit) $(ARGS)
 
 docker: ## Build the CUDA development image
-	docker build -t $(IMAGE) $(ROOT_DIR)
+	docker build --build-arg UID=$$(id -u) --build-arg GID=$$(id -g) -t $(IMAGE) $(ROOT_DIR)
 
 docker-shell: docker ## Open a shell in the development image
 	docker run --rm -it --device nvidia.com/gpu=all -v "$(ROOT_DIR)":/work -w /work $(IMAGE) bash
