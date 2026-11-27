@@ -25,13 +25,12 @@ The two columns are right ascension $\alpha$ and declination $\delta$, both in
 
 ## Provenance
 
-These catalogs are the input data for the Galaxy Problem assignment in the
-GPU Programming course at Åbo Akademi University. They are **not** my own data
-and I claim no authorship of them. They are included here so that the
-benchmark figures reported in the accompanying blog posts can actually be
-reproduced rather than merely described - `make verify` checks the solver's
-output against `results/omega.out` byte for byte, which is only meaningful with
-the same input.
+These catalogs are the input data for the Galaxy Problem assignment in the GPU
+Programming course at Åbo Akademi University, provided by Professor Emeritus Jan
+Westerholm. They are not my own data and I claim no authorship of them. They are included
+here so that the benchmark figures in the accompanying blog posts can be reproduced:
+`make verify` checks the solver's output against `results/omega.out` byte for byte, which
+is only meaningful with the same input.
 
 If you are the rights holder and would prefer these not be redistributed, open
 an issue and I will replace them with a generator that produces catalogs of
