@@ -1,13 +1,17 @@
-# The project's existing style: LLVM defaults, which the HIP source already
-# matches exactly. Kept deliberately close to upstream LLVM so that the code
-# quoted in the accompanying blog posts stays identical to the code here.
----
-Language: Cpp
 BasedOnStyle: LLVM
+UseTab: Always
 IndentWidth: 4
 TabWidth: 4
-UseTab: Never
-ColumnLimit: 120
+ContinuationIndentWidth: 4
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: Never
 PointerAlignment: Right
+ColumnLimit: 120
 SortIncludes: false
-...
+AlignConsecutiveMacros: true
+SpaceBeforeParens: ControlStatements
+AlwaysBreakAfterReturnType: All
+InsertBraces: true
+BreakBeforeBraces: Allman
