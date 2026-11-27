@@ -191,29 +191,31 @@ tidy: ## clang-tidy (slow; needs CUDA/ROCm headers)
 
 HOOK_MARKER := galaxy-pre-commit-container
 
-# With Docker, the git hooks run in the pinned image, so the only host
-# requirements are docker and make. Without it, fall back to a host-installed
-# pre-commit, which uses whatever lint tools are on PATH.
-install-hooks: ## Install the git hooks (run in the pinned container if Docker is present)
+HOOK_MARKER := galaxy-pre-commit-container
+
+# scripts/git-hook.sh is copied into .git/hooks as pre-commit and pre-push. At
+# commit time it uses Docker (the pinned image) if present, otherwise a local
+# pre-commit, so one hook works on the host and inside the devcontainer.
+install-hooks: ## Install the git hooks (pinned container with Docker, else local pre-commit)
 	@if command -v docker >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory pre-commit-build; \
-	  hooks_dir=$$(git -C "$(ROOT_DIR)" rev-parse --path-format=absolute --git-path hooks); \
-	  mkdir -p "$$hooks_dir"; \
-	  for spec in "pre-commit:" "pre-push:ARGS=--all-files"; do \
-	    stage=$${spec%%:*}; args=$${spec#*:}; hook="$$hooks_dir/$$stage"; \
-	    if [ -e "$$hook" ] && ! grep -q "$(HOOK_MARKER)" "$$hook"; then \
-	      printf "$(RED)error: $$hook exists and was not installed by this Makefile$(RESET)\n" >&2; exit 1; \
-	    fi; \
-	    printf '#!/bin/sh\n# $(HOOK_MARKER): installed by `make install-hooks`\nexec make -C "$$(git rev-parse --show-toplevel)" --no-print-directory pre-commit-staged STAGE=%s %s\n' \
-	      "$$stage" "$$args" > "$$hook"; \
-	    chmod +x "$$hook"; \
-	  done; \
-	  printf "$(GREEN)hooks installed (running in $(PC_IMAGE))$(RESET)\n"; \
+	  mode="running in $(PC_IMAGE)"; \
+	elif command -v pre-commit >/dev/null 2>&1; then \
+	  pre-commit install-hooks; \
+	  mode="local pre-commit"; \
 	else \
-	  command -v pre-commit >/dev/null 2>&1 || { printf "$(RED)error: neither docker nor pre-commit found$(RESET)\n" >&2; exit 1; }; \
-	  pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push; \
-	  printf "$(GREEN)hooks installed (host tools)$(RESET)\n"; \
-	fi
+	  printf "$(RED)error: neither docker nor pre-commit found$(RESET)\n" >&2; exit 1; \
+	fi; \
+	hooks_dir=$$(git -C "$(ROOT_DIR)" rev-parse --path-format=absolute --git-path hooks); \
+	mkdir -p "$$hooks_dir"; \
+	for stage in pre-commit pre-push; do \
+	  hook="$$hooks_dir/$$stage"; \
+	  if [ -e "$$hook" ] && ! grep -q "$(HOOK_MARKER)" "$$hook"; then \
+	    printf "$(RED)error: $$hook exists and was not installed by this Makefile$(RESET)\n" >&2; exit 1; \
+	  fi; \
+	  install -m 755 "$(ROOT_DIR)/scripts/git-hook.sh" "$$hook"; \
+	done; \
+	printf "$(GREEN)hooks installed ($$mode)$(RESET)\n"
 
 ##@ Containers
 pre-commit-build: ## Build the CUDA-free image the hooks run in
