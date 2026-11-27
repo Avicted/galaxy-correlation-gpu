@@ -119,11 +119,13 @@ timing scaffolding are deliberately duplicated rather than shared through a head
 [CONTRIBUTING.md](CONTRIBUTING.md) covers that, the two-makefile split, the benchmark
 protocol and the frozen files in `data/` and `results/`.
 
-## Data
+## Acknowledgements
 
-The input catalogs come from the Åbo Akademi University GPU Programming course and are not
-my own work; see [`data/README.md`](data/README.md).
+The host-side program skeleton and the input catalogs come from the Galaxy Problem
+assignment of the GPU Programming course at Åbo Akademi University, created by Professor
+Emeritus Jan Westerholm. The GPU kernels and their optimizations are my own work. See
+[`data/README.md`](data/README.md) for the catalogs' provenance.
 
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+GPL-3.0 © 2026 Victor Anderssén. See [LICENSE](LICENSE).
