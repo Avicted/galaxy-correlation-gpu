@@ -197,8 +197,10 @@ HOOK_MARKER := galaxy-pre-commit-container
 install-hooks: ## Install the git hooks (run in the pinned container if Docker is present)
 	@if command -v docker >/dev/null 2>&1; then \
 	  $(MAKE) --no-print-directory pre-commit-build; \
+	  hooks_dir=$$(git -C "$(ROOT_DIR)" rev-parse --path-format=absolute --git-path hooks); \
+	  mkdir -p "$$hooks_dir"; \
 	  for spec in "pre-commit:" "pre-push:ARGS=--all-files"; do \
-	    stage=$${spec%%:*}; args=$${spec#*:}; hook="$(ROOT_DIR)/.git/hooks/$$stage"; \
+	    stage=$${spec%%:*}; args=$${spec#*:}; hook="$$hooks_dir/$$stage"; \
 	    if [ -e "$$hook" ] && ! grep -q "$(HOOK_MARKER)" "$$hook"; then \
 	      printf "$(RED)error: $$hook exists and was not installed by this Makefile$(RESET)\n" >&2; exit 1; \
 	    fi; \
