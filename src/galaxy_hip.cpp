@@ -1,3 +1,10 @@
+// Copyright (C) 2026 Victor Anderssén
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Based on the Galaxy Problem course template by Professor Emeritus Jan
+// Westerholm, Åbo Akademi University (host-side skeleton and input data).
+// The GPU kernels and all optimizations are original work.
+//
 // Native HIP implementation tuned for AMD RDNA 2 (RX 6900 XT, gfx1030).
 // Same two-point angular correlation as galaxy_cuda.cu, structured for RDNA 2:
 //   - one thread per pair over a 2D grid, wave64 (-mwavefrontsize64)
@@ -6,9 +13,6 @@
 // Unlike the CUDA path this calls the real acosf and computes sin/cos(decl)
 // per pair, so the two backends do not produce bit-identical output;
 // results/omega.out is the CUDA output. See the Makefile (`make hip`).
-//
-// The AMD figures in README.md are historical records from the RX 6900 XT and
-// have not been re-measured; they are not comparable with the RTX 5080 run.
 //
 // The host side is duplicated from galaxy_cuda.cu rather than shared through
 // a header - see the note there. Each backend is one self-contained
