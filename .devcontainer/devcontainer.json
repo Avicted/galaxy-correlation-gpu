@@ -10,7 +10,7 @@
   },
   "workspaceFolder": "/work",
   "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
-  "runArgs": ["--gpus", "all"],
+  "runArgs": ["--device", "nvidia.com/gpu=all"],
   "postCreateCommand": "pre-commit install --install-hooks",
   "remoteUser": "dev",
   "customizations": {

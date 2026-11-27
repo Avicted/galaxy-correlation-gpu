@@ -247,7 +247,7 @@ docker: ## Build the CUDA development image
 	docker build -t $(IMAGE) $(ROOT_DIR)
 
 docker-shell: docker ## Open a shell in the development image
-	docker run --rm -it --gpus all -v "$(ROOT_DIR)":/work -w /work $(IMAGE) bash
+	docker run --rm -it --device nvidia.com/gpu=all -v "$(ROOT_DIR)":/work -w /work $(IMAGE) bash
 
 ##@ Housekeeping
 clean: ## Remove binaries and run artifacts
