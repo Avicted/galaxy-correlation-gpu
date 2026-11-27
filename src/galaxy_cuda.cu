@@ -1,3 +1,10 @@
+// Copyright (C) 2026 Victor Anderssén
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Based on the Galaxy Problem course template by Professor Emeritus Jan
+// Westerholm, Åbo Akademi University (host-side skeleton and input data).
+// The GPU kernels and all optimizations are original work.
+//
 // Native CUDA implementation tuned for NVIDIA RTX 5080 (Blackwell, sm_120).
 // Same two-point angular correlation as galaxy_hip.cpp, restructured for
 // NVIDIA:
@@ -9,11 +16,7 @@
 //   - DD/RR symmetry with whole-block diagonal skipping
 //   - inner-loop unrolling; shared-memory atomic histograms (fast on Blackwell),
 //     unpadded, unlike the HIP build - the padding measures as a no-op here
-// Measured on an RTX 5080 (driver 610.57.04, CUDA 13.3, sm_120, performance
-// governor), median of runs 2-9: 22.7 ms kernel, 0.032 s wall clock. The same
-// code with the block tiling, the fast acos, the symmetry and the unrolling
-// removed one at a time measures 188.7 ms, so the tuning is worth 8.3x. See
-// the Makefile (`make cuda`, `make bench`) for the build and run protocol.
+// See the Makefile (`make cuda`, `make bench`) for the build and run protocol.
 //
 // The host side (catalog reader, timing, histogram assertions) is duplicated
 // in galaxy_hip.cpp rather than shared through a header. That is deliberate:
