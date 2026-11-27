@@ -218,9 +218,17 @@ pre-commit-build: ## Build the CUDA-free image the hooks run in
 	docker build -f $(ROOT_DIR)/Dockerfile.pre-commit -t $(PC_IMAGE) $(ROOT_DIR)
 
 # Runs as the calling user so files rewritten by fixing hooks stay owned by you.
+#
+# The repository is mounted at its host path, not /src, so that GIT_INDEX_FILE
+# (which git points at a temporary index during `git commit -a` or
+# `git commit <path>`) resolves inside the container and the hooks see exactly
+# the files being committed. In a linked worktree `.git` is a file pointing at
+# the main repository's git directory, so that directory is mounted as well.
+GIT_COMMON_DIR := $(shell git -C "$(ROOT_DIR)" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 PC_RUN = docker run --rm \
-	  --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
-	  -v "$(ROOT_DIR)":/src \
+	  --user "$$(id -u):$$(id -g)" -e HOME=/tmp -e GIT_INDEX_FILE \
+	  -v "$(ROOT_DIR)":"$(ROOT_DIR)" -w "$(ROOT_DIR)" \
+	  $(if $(filter-out $(ROOT_DIR)/.git,$(GIT_COMMON_DIR)),-v "$(GIT_COMMON_DIR)":"$(GIT_COMMON_DIR)") \
 	  -v galaxy-pre-commit-cache:/cache \
 	  $(PC_IMAGE)
 
