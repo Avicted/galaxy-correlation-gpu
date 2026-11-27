@@ -239,7 +239,8 @@ pre-commit: pre-commit-build ## Run every hook inside that image
 
 # What the installed git hooks call. STAGE picks the hook stage; ARGS is
 # `--all-files` for pre-push, where there are no staged files to select hooks by.
-pre-commit-staged: pre-commit-build ## Run one hook stage (STAGE=pre-commit|pre-push) in that image
+pre-commit-staged: ## Run one hook stage (STAGE=pre-commit|pre-push) in that image
+	@docker build -q -f $(ROOT_DIR)/Dockerfile.pre-commit -t $(PC_IMAGE) $(ROOT_DIR) >/dev/null
 	$(PC_RUN) run --hook-stage $(or $(STAGE),pre-commit) $(ARGS)
 
 docker: ## Build the CUDA development image
