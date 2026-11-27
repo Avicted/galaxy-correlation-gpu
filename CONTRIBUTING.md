@@ -58,7 +58,15 @@ The `pre-push` hook also runs `clang-tidy`, which needs the CUDA headers. The
 pre-commit image has none, so it skips there; CI runs it in its own `tidy`
 job. To run it locally, or to build or run the solver, use a machine with
 `nvcc` or `hipcc`, or the devcontainer (`.devcontainer/`, which needs an
-NVIDIA GPU).
+NVIDIA GPU). Linting and contributing never need either.
+
+The devcontainer and `make docker-shell` pass the GPU in by CDI device, which
+needs Docker 28.3+ and the NVIDIA Container Toolkit on the host:
+
+```sh
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml   # regenerate after driver updates
+docker run --rm --device nvidia.com/gpu=all nvidia/cuda:13.3.1-base-ubuntu24.04 nvidia-smi -L
+```
 
 ## Before publishing a number
 
