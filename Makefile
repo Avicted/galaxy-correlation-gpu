@@ -79,7 +79,7 @@ PC_IMAGE := galaxy-correlation-pre-commit:local
 
 .PHONY: FORCE all cuda hip run run-cuda run-hip check-env bench verify spill-check \
         format format-check lint tidy data-integrity \
-        pre-commit pre-commit-build install-hooks docker docker-shell \
+        pre-commit pre-commit-staged pre-commit-build install-hooks docker docker-shell \
         clean info help
 .DEFAULT_GOAL := help
 
@@ -189,21 +189,48 @@ lint: ## Full no-GPU gate (format, shell, docker, secrets, data, links)
 tidy: ## clang-tidy (slow; needs CUDA/ROCm headers)
 	@$(MAKE) --no-print-directory -f Makefile.pre-commit tidy
 
-install-hooks: ## Install the pre-commit hooks into .git/hooks
-	@command -v pre-commit >/dev/null 2>&1 || { printf "$(RED)error: pre-commit not installed (pip install pre-commit)$(RESET)\n" >&2; exit 1; }
-	@pre-commit install --install-hooks
-	@printf "$(GREEN)hooks installed$(RESET)\n"
+HOOK_MARKER := galaxy-pre-commit-container
+
+# With Docker, the git hooks run in the pinned image, so the only host
+# requirements are docker and make. Without it, fall back to a host-installed
+# pre-commit, which uses whatever lint tools are on PATH.
+install-hooks: ## Install the git hooks (run in the pinned container if Docker is present)
+	@if command -v docker >/dev/null 2>&1; then \
+	  $(MAKE) --no-print-directory pre-commit-build; \
+	  for spec in "pre-commit:" "pre-push:ARGS=--all-files"; do \
+	    stage=$${spec%%:*}; args=$${spec#*:}; hook="$(ROOT_DIR)/.git/hooks/$$stage"; \
+	    if [ -e "$$hook" ] && ! grep -q "$(HOOK_MARKER)" "$$hook"; then \
+	      printf "$(RED)error: $$hook exists and was not installed by this Makefile$(RESET)\n" >&2; exit 1; \
+	    fi; \
+	    printf '#!/bin/sh\n# $(HOOK_MARKER): installed by `make install-hooks`\nexec make -C "$$(git rev-parse --show-toplevel)" --no-print-directory pre-commit-staged STAGE=%s %s\n' \
+	      "$$stage" "$$args" > "$$hook"; \
+	    chmod +x "$$hook"; \
+	  done; \
+	  printf "$(GREEN)hooks installed (running in $(PC_IMAGE))$(RESET)\n"; \
+	else \
+	  command -v pre-commit >/dev/null 2>&1 || { printf "$(RED)error: neither docker nor pre-commit found$(RESET)\n" >&2; exit 1; }; \
+	  pre-commit install --install-hooks --hook-type pre-commit --hook-type pre-push; \
+	  printf "$(GREEN)hooks installed (host tools)$(RESET)\n"; \
+	fi
 
 ##@ Containers
 pre-commit-build: ## Build the CUDA-free image the hooks run in
 	docker build -f $(ROOT_DIR)/Dockerfile.pre-commit -t $(PC_IMAGE) $(ROOT_DIR)
 
-pre-commit: pre-commit-build ## Run every hook inside that image
-	docker run --rm \
+# Runs as the calling user so files rewritten by fixing hooks stay owned by you.
+PC_RUN = docker run --rm \
 	  --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
 	  -v "$(ROOT_DIR)":/src \
 	  -v galaxy-pre-commit-cache:/cache \
-	  $(PC_IMAGE) run --all-files
+	  $(PC_IMAGE)
+
+pre-commit: pre-commit-build ## Run every hook inside that image
+	$(PC_RUN) run --all-files
+
+# What the installed git hooks call. STAGE picks the hook stage; ARGS is
+# `--all-files` for pre-push, where there are no staged files to select hooks by.
+pre-commit-staged: pre-commit-build ## Run one hook stage (STAGE=pre-commit|pre-push) in that image
+	$(PC_RUN) run --hook-stage $(or $(STAGE),pre-commit) $(ARGS)
 
 docker: ## Build the CUDA development image
 	docker build -t $(IMAGE) $(ROOT_DIR)
