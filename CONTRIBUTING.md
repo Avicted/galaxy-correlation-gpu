@@ -32,16 +32,33 @@ hook at it. Do not inline a command into `.pre-commit-config.yaml`.
 
 ## Setup
 
+The only prerequisites for contributing are `git`, `make` and Docker. No CUDA
+toolkit, ROCm or GPU is needed to format, lint, or open a pull request.
+
 ```sh
-make install-hooks      # pre-commit install --install-hooks
-make lint               # the full no-GPU gate
-make pre-commit         # the same, inside the pinned container
+git clone https://github.com/Avicted/galaxy-correlation-gpu && cd galaxy-correlation-gpu
+make install-hooks      # git hooks that run in the pinned container
+make pre-commit         # the whole-tree check, identical to CI
+git config blame.ignoreRevsFile .git-blame-ignore-revs   # optional: skip the formatting commit in blame
 ```
 
-If you have no lint tools installed locally, `make pre-commit` is the path -
-it builds `Dockerfile.pre-commit` and runs every hook inside it, at the pinned
-versions. `make -f Makefile.pre-commit tools` reports what you have and flags
-drift from the pins.
+`make install-hooks` builds `Dockerfile.pre-commit` (about 250 MB) and installs
+`pre-commit` and `pre-push` hooks that run inside it, so every contributor
+gets the exact tool versions CI uses, whatever is installed on the host. The
+container runs as you, so files a hook fixes (formatting, whitespace) stay
+yours. A hook that fixes a file still fails the commit once; `git add` and
+commit again.
+
+Without Docker, `make install-hooks` falls back to a host-installed
+`pre-commit`, which uses the lint tools on your `PATH`. Run
+`make -f Makefile.pre-commit tools` to see whether they match the pins; a
+different `clang-format` major version reformats the tree and fails CI.
+
+The `pre-push` hook also runs `clang-tidy`, which needs the CUDA headers. The
+pre-commit image has none, so it skips there; CI runs it in its own `tidy`
+job. To run it locally, or to build or run the solver, use a machine with
+`nvcc` or `hipcc`, or the devcontainer (`.devcontainer/`, which needs an
+NVIDIA GPU).
 
 ## Before publishing a number
 
