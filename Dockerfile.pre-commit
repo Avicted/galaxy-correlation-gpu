@@ -60,8 +60,14 @@ RUN <<EOF
 
     apt-get clean
     rm -rf /var/lib/apt/lists/*
-    git config --global --add safe.directory /src
+    git config --system --add safe.directory /src
+    mkdir -p /cache
+    chmod 777 /cache
 EOF
+
+# The container runs as the calling user (see `make pre-commit`), so the hook
+# environments live in a world-writable directory rather than in root's home.
+ENV PRE_COMMIT_HOME=/cache
 
 WORKDIR /src
 

@@ -200,8 +200,9 @@ pre-commit-build: ## Build the CUDA-free image the hooks run in
 
 pre-commit: pre-commit-build ## Run every hook inside that image
 	docker run --rm \
+	  --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
 	  -v "$(ROOT_DIR)":/src \
-	  -v pre-commit-cache:/root/.cache/pre-commit \
+	  -v galaxy-pre-commit-cache:/cache \
 	  $(PC_IMAGE) run --all-files
 
 docker: ## Build the CUDA development image
