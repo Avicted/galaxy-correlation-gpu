@@ -3,7 +3,7 @@
 # Image that runs the pre-commit hooks with every tool present as a system
 # binary, at the exact pinned version.
 #
-# Deliberately CUDA-free, and ~250 MB rather than the ~6 GB of the CUDA
+# Deliberately CUDA-free, and ~420 MB rather than the ~6 GB of the CUDA
 # development image. That is the point of the split: Makefile.pre-commit holds
 # the checks that must run where there is no GPU toolchain, and this image
 # proves they do. `make tidy` is the one check that needs CUDA headers; it
