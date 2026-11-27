@@ -47,7 +47,8 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs   # optional: skip the fo
 gets the exact tool versions CI uses, whatever is installed on the host. The
 container runs as you, so files a hook fixes (formatting, whitespace) stay
 yours. A hook that fixes a file still fails the commit once; `git add` and
-commit again.
+commit again. The same hook file works inside the devcontainer, where there is
+no Docker and it uses the image's own pinned tools.
 
 Without Docker, `make install-hooks` falls back to a host-installed
 `pre-commit`, which uses the lint tools on your `PATH`. Run
