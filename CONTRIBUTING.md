@@ -42,7 +42,7 @@ make pre-commit         # the whole-tree check, identical to CI
 git config blame.ignoreRevsFile .git-blame-ignore-revs   # optional: skip the formatting commit in blame
 ```
 
-`make install-hooks` builds `Dockerfile.pre-commit` (about 250 MB) and installs
+`make install-hooks` builds `Dockerfile.pre-commit` (about 420 MB) and installs
 `pre-commit` and `pre-push` hooks that run inside it, so every contributor
 gets the exact tool versions CI uses, whatever is installed on the host. The
 container runs as you, so files a hook fixes (formatting, whitespace) stay
